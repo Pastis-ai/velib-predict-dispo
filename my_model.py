@@ -12,7 +12,7 @@ Quickstart:
 
 import os
 import sys
-import pickle
+import cloudpickle
 import argparse
 import time
 
@@ -268,7 +268,7 @@ def main():
 
     print(f"\nExporting to {OUTPUT_PKL}...")
     with open(OUTPUT_PKL, "wb") as f:
-        pickle.dump(model, f)
+        cloudpickle.dump(model, f)
     print(f"  Saved: {OUTPUT_PKL}")
 
     print(f"\nVerifying {OUTPUT_PKL}...")
