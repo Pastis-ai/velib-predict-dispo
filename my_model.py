@@ -267,6 +267,8 @@ def main():
     print(f"  Done in {time.time() - t0:.1f}s")
 
     print(f"\nExporting to {OUTPUT_PKL}...")
+    import my_model as _my_model_module
+    cloudpickle.register_pickle_by_value(_my_model_module)
     with open(OUTPUT_PKL, "wb") as f:
         cloudpickle.dump(model, f)
     print(f"  Saved: {OUTPUT_PKL}")
