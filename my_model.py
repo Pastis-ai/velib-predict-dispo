@@ -37,6 +37,28 @@ OUTPUT_PKL = "submission.pkl"
 API_BASE   = "https://pastis.ai/api/scenarios/velib-predict-dispo"
 
 
+def export_submission(model, path=OUTPUT_PKL):
+    """Single authorized way to write a submission .pkl.
+
+    The scoring sandbox imports ``pastis_velib`` but does NOT have access to
+    your local ``my_model`` module. cloudpickle must therefore serialize these
+    local modules BY VALUE (embedding their bytecode) so the pickle is
+    self-contained. ``register_pickle_by_value`` is a per-session cloudpickle
+    setting that must be active at dump time — it is not stored on the model —
+    so every export path must go through this function.
+
+    If you add a new local module imported by your model (e.g. ``features.py``),
+    register it here too, otherwise scoring fails with "No module named ...".
+    """
+    import my_model as _my_model_module
+    import pastis_velib as _pastis_velib_module
+    cloudpickle.register_pickle_by_value(_my_model_module)
+    cloudpickle.register_pickle_by_value(_pastis_velib_module)
+    with open(path, "wb") as f:
+        cloudpickle.dump(model, f)
+    return path
+
+
 # ---------------------------------------------------------------------------
 # MyModel — implement your best model here
 # ---------------------------------------------------------------------------
@@ -361,10 +383,7 @@ def main():
     print(f"  Done in {time.time() - t0:.1f}s")
 
     print(f"\nExporting to {OUTPUT_PKL}...")
-    import my_model as _my_model_module
-    cloudpickle.register_pickle_by_value(_my_model_module)
-    with open(OUTPUT_PKL, "wb") as f:
-        cloudpickle.dump(model, f)
+    export_submission(model, OUTPUT_PKL)
     print(f"  Saved: {OUTPUT_PKL}")
 
     print(f"\nVerifying {OUTPUT_PKL}...")
