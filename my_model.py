@@ -189,6 +189,80 @@ def load_data() -> pd.DataFrame:
     return df
 
 
+def load_full_dataset(
+    date_from: str = "2026-02-01",
+    date_to: str = "2026-05-31",
+    arrondissements: list[str] | None = None,
+    cache_path: str = "velib_full.csv",
+) -> pd.DataFrame:
+    """
+    Download the FULL training dataset from the Pastis API.
+
+    WARNING — this can be very large and slow:
+    - All arrondissements over several months = millions of rows
+    - The dataset grows every day as new snapshots are scraped
+    - Expect long download times and high memory usage on a laptop
+
+    For heavy training, prefer Google Colab (more RAM, faster network).
+    See the notebook "Going Further" section for Colab/TPU guidance.
+
+    Parameters
+    ----------
+    date_from, date_to : str
+        Date range (YYYY-MM-DD). Wider range = more data = slower.
+    arrondissements : list[str], optional
+        Filter to specific arrondissements (e.g. ["Paris 18e", "Paris 19e"]).
+        Use the EXACT names returned by the /arrondissements endpoint:
+            "Paris 1er", "Paris 18e", "Boulogne-Billancourt", ...
+        NOT "Paris 18e Arrondissement" — that returns zero rows.
+        None = ALL arrondissements (largest possible download).
+    cache_path : str
+        Local file to cache the download. If it exists, it is reused
+        instead of re-downloading (delete it to force a fresh pull).
+
+    Returns
+    -------
+    pd.DataFrame with parsed snapshot_at.
+    """
+    # Reuse cached file if present — avoids re-downloading on every run
+    if os.path.exists(cache_path):
+        print(f"Using cached full dataset: {cache_path}")
+        print(f"  (delete {cache_path} to force a fresh download)")
+        return pd.read_csv(cache_path, parse_dates=["snapshot_at"])
+
+    params = {"date_from": date_from, "date_to": date_to}
+    if arrondissements:
+        params["arrondissements"] = arrondissements
+
+    print(f"Downloading full dataset from API...")
+    print(f"  Period          : {date_from} -> {date_to}")
+    print(f"  Arrondissements : {arrondissements or 'ALL (this is large!)'}")
+    print(f"  This may take several minutes. Be patient.")
+
+    with requests.get(
+        f"{API_BASE}/download",
+        params=params,
+        stream=True,
+        timeout=600,  # 10 min — full dataset can be slow
+    ) as r:
+        r.raise_for_status()
+        total = int(r.headers.get("content-length", 0))
+        downloaded = 0
+        with open(cache_path, "wb") as f:
+            for chunk in r.iter_content(chunk_size=8192):
+                f.write(chunk)
+                downloaded += len(chunk)
+                # Lightweight progress without tqdm dependency in the loop
+                if total and downloaded % (5 * 1024 * 1024) < 8192:
+                    pct = downloaded / total * 100
+                    print(f"    {downloaded/1e6:.0f} MB ({pct:.0f}%)", end="\r")
+
+    df = pd.read_csv(cache_path, parse_dates=["snapshot_at"])
+    print(f"\n  Downloaded: {len(df):,} rows, {df['stationcode'].nunique()} stations")
+    print(f"  Date range: {df['snapshot_at'].min()} -> {df['snapshot_at'].max()}")
+    return df
+
+
 def temporal_split(df: pd.DataFrame, test_fraction: float = 0.2):
     """
     Temporal split — NEVER random split on time series data.
@@ -210,8 +284,20 @@ def temporal_split(df: pd.DataFrame, test_fraction: float = 0.2):
 # ---------------------------------------------------------------------------
 
 def main():
+    # Two training modes:
+    #   python my_model.py          → fast: local dev CSV (~42k rows, 3 arrondissements)
+    #   python my_model.py --full   → heavy: full API dataset (millions of rows)
+    #
+    # Use the fast mode for development and debugging.
+    # Use --full only when you are ready for a final training run,
+    # ideally on Google Colab (see notebook for Colab/TPU guidance).
     parser = argparse.ArgumentParser(description="Train and export a Pastis.ai submission.")
     parser.add_argument("--verify", action="store_true", help="Only verify an existing submission.pkl")
+    parser.add_argument(
+        "--full",
+        action="store_true",
+        help="Train on the full dataset from the API (large, slow — prefer Colab)",
+    )
     args = parser.parse_args()
 
     # --- Verify-only mode ---
@@ -224,8 +310,12 @@ def main():
         return
 
     # --- [1/5] Load data ---
-    print("\n[1/5] Loading data...")
-    df = load_data()
+    if args.full:
+        print("\n[1/5] Loading FULL dataset from API (this is large)...")
+        df = load_full_dataset()
+    else:
+        print("\n[1/5] Loading local dev dataset...")
+        df = load_data()
 
     # --- [2/5] Temporal train / test split ---
     print("\n[2/5] Splitting data (temporal, not random)...")
