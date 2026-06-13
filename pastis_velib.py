@@ -157,8 +157,23 @@ def make_basic_features(df: pd.DataFrame, extra_df=None) -> pd.DataFrame:
     """
     out = pd.DataFrame(index=df.index)
 
-    # Temporal features — strong predictors of station demand
-    ts = pd.to_datetime(df["snapshot_at"])
+    # Temporal features — strong predictors of station demand.
+    #
+    # snapshot_at is raw UTC (the CSV and the API both serve UTC). But Vélib
+    # demand follows the human wall clock, not UTC: the morning commute peaks at
+    # 8am *Paris time* all year round. Deriving `hour` straight from UTC would
+    # smear that peak across two different UTC hours depending on the season,
+    # because Paris is UTC+1 in winter and UTC+2 in summer (daylight saving).
+    # That adds noise to the single most predictive signal.
+    #
+    # So we convert UTC -> Europe/Paris before extracting hour / dayofweek.
+    # The IANA zone "Europe/Paris" handles DST automatically — never use a fixed
+    # offset, which would be wrong for ~half the year. `utc=True` makes this
+    # robust whether snapshot_at is tz-naive (UTC implied) or already tz-aware.
+    #
+    # NOTE: changing how features are derived here changes what the model was
+    # trained on. Any existing submission.pkl must be retrained after this edit.
+    ts = pd.to_datetime(df["snapshot_at"], utc=True).dt.tz_convert("Europe/Paris")
     out["hour"] = ts.dt.hour.astype(int)
     out["dayofweek"] = ts.dt.dayofweek.astype(int)   # 0=Monday, 6=Sunday
     out["is_weekend"] = (out["dayofweek"] >= 5).astype(int)

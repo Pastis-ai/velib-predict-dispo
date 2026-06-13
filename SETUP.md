@@ -117,7 +117,8 @@ With the virtual environment **activated** (you see `(.venv)` in your prompt):
 pip install -r requirements.txt
 ```
 
-This installs 8 packages (scikit-learn, xgboost, lightgbm, pandas, numpy, requests, matplotlib, seaborn).  
+This installs the project dependencies (scikit-learn, xgboost, lightgbm, pandas,
+numpy, requests, matplotlib, seaborn, tqdm, cloudpickle).  
 It takes 1–3 minutes depending on your connection.
 
 ---
