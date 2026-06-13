@@ -132,10 +132,15 @@ The Brier Score works identically for regression on [0, 1] and for binary classi
 
 | BS | Score | Interpretation |
 |----|-------|----------------|
-| 0.05 | 95 | Baseline (always predict mean fill rate) |
-| 0.03 | 97 | Decent model |
-| 0.01 | 99 | Good model |
-| < 0.01 | > 99 | Excellent |
+| 0.037 | 96.3 | Baseline (always predict mean fill rate) on the dev dataset |
+| 0.023 | 97.7 | This starter, feature-engineered (`HistGradientBoostingRegressor`) |
+| 0.010 | 99.0 | Strong model |
+| < 0.005 | > 99.5 | Suspiciously good — verify there is no data leakage |
+
+The Brier Score is bounded by the variance of the target (~0.037 here), so on this
+small dataset every model is compressed into the 96–100 range. The competition lives
+in that 1–4 point gap. Download more data from the API and the variance — and the
+competitive range — grows.
 
 **Your goal: beat the baseline. Aim for a meaningful improvement through feature engineering.**
 

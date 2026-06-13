@@ -252,10 +252,14 @@ def main():
     bs_model = brier_score_local(y_test, y_pred, label="MyModel")
 
     bs_baseline = float(np.mean((baseline_preds - y_test) ** 2))
+    # Leakage guard: the naive baseline already sits near 0.037 on this dataset,
+    # so a legitimate feature-engineered model lands around 0.02-0.03. Only a
+    # near-perfect score (BS < 0.005, leaderboard > 99.5) is implausible without
+    # leaking the target — that is what this branch flags.
     if bs_model >= bs_baseline:
         print("  ⚠  Model does not beat baseline — check your features")
-    elif bs_model < 0.05:
-        print("  ⚠  Very low Brier Score — verify there is no data leakage")
+    elif bs_model < 0.005:
+        print("  ⚠  Suspiciously low Brier Score — verify there is no data leakage")
     else:
         improvement_pct = (bs_baseline - bs_model) / bs_baseline * 100
         print(f"  ✓  {improvement_pct:.1f}% improvement over baseline")
