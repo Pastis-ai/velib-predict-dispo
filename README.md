@@ -22,7 +22,7 @@ This is a **regression** problem. Your model must output a value between 0 and 1
 1. Click the **Open in Colab** badge above
 2. Run the first cell to clone the repo and install dependencies
 3. Run all remaining cells (`Runtime > Run all`)
-4. Download `submission.pkl` and upload it on [pastis.ai](https://pastis.ai)
+4. Download `submission.pkl` and upload it on the [submission page](https://pastis.ai/scenarios/velib-predict-dispo?tab=submit)
 
 ---
 
@@ -173,5 +173,8 @@ See [SETUP.md](SETUP.md) for all endpoints, filtering options, and volume estima
 
 1. Train your model: `python my_model.py`
 2. Verify the output: `python my_model.py --verify`
-3. Go to [pastis.ai](https://pastis.ai) and upload `submission.pkl`
+3. Go to the [submission page](https://pastis.ai/scenarios/velib-predict-dispo?tab=submit) and upload `submission.pkl`
 4. Check the leaderboard!
+
+> On the leaderboard you appear under a stable botanical pseudonym by default —
+> never your real name unless you choose to reveal it.
