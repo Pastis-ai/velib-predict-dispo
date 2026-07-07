@@ -9,6 +9,7 @@ Do NOT modify this file — it is part of the grading contract.
 from abc import ABC, abstractmethod
 
 import ast
+import inspect
 import pickle
 
 import numpy as np
@@ -56,6 +57,13 @@ class PastisBaseModel(ABC):
         ----------
         df_raw : pd.DataFrame
             Raw data with columns listed in AVAILABLE_FEATURES.
+
+        Notes
+        -----
+        The sandbox never calls fit() — it receives an already-trained
+        model. Your fit() signature is therefore free: adding optional
+        parameters (e.g. ``fit(self, df_raw, extra_df=None)`` for symmetry
+        with contract v2 predict) is safe.
         """
 
     @abstractmethod
@@ -73,6 +81,42 @@ class PastisBaseModel(ABC):
         np.ndarray
             1D array of floats in [0.0, 1.0], shape (len(df_raw),).
             Immutable output contract — the sandbox enforces it strictly.
+
+        Notes — contract v2 (optional: auxiliary data)
+        ----------------------------------------------
+        The signature above is contract v1, the default. It stays fully
+        valid forever — nothing forces you to change it.
+
+        If the scenario declares auxiliary data sources (weather, station
+        geography, ...), your model can opt in to receive them by declaring
+        an explicit ``extra_df`` parameter:
+
+            def predict(self, df_raw, extra_df=None) -> np.ndarray: ...
+
+        How it works:
+
+        - The sandbox inspects ``inspect.signature(model.predict)``. If an
+          explicitly named ``extra_df`` parameter is present, it calls
+          ``model.predict(df, extra_df=extra)``. A bare ``**kwargs`` does
+          NOT count — it is excluded on purpose (a raw sklearn Pipeline has
+          ``predict(X, **predict_params)`` and would forward ``extra_df``
+          to its final estimator, crashing it).
+        - ``extra_df`` is a dict ``{source_key: pd.DataFrame}`` — one entry
+          per auxiliary source declared by the scenario, each DataFrame at
+          the natural granularity of its source (e.g. hourly weather = one
+          row per hour for the city; station geography = one row per
+          station). It is NOT a single DataFrame.
+        - Datetime columns in these DataFrames arrive already parsed as
+          datetime dtypes.
+        - The platform never joins the sources to the main DataFrame —
+          merging them in your own make_features() is your job (and where
+          the value is).
+        - If the scenario declares no source, the sandbox always calls
+          ``predict(df)`` v1-style, even if your model accepts ``extra_df``.
+          Defaulting ``extra_df=None`` is therefore always safe.
+
+        The output contract is unchanged in v2: np.ndarray of floats in
+        [0.0, 1.0], shape (len(df_raw),).
         """
 
 
@@ -146,9 +190,16 @@ def make_basic_features(df: pd.DataFrame, extra_df=None) -> pd.DataFrame:
     ----------
     df : pd.DataFrame
         Raw DataFrame with AVAILABLE_FEATURES columns.
-    extra_df : pd.DataFrame, optional
-        Reserved for external data sources (weather, events, etc.).
-        Currently ignored. Future use: merge on snapshot_at + location.
+    extra_df : dict[str, pd.DataFrame], optional
+        Auxiliary data sources keyed by source key — the same dict the
+        scoring sandbox passes to a contract-v2 predict() (and that
+        load_aux_data() in my_model.py returns locally). One entry per
+        source declared by the scenario, each DataFrame at the natural
+        granularity of its source (e.g. hourly weather = one row per hour;
+        station geography = one row per station).
+        This baseline helper ignores it on purpose: joining auxiliary data
+        to the main DataFrame is student territory — do it in your own
+        make_features().
 
     Returns
     -------
@@ -205,7 +256,8 @@ def make_basic_features(df: pd.DataFrame, extra_df=None) -> pd.DataFrame:
     # Students may add lagged values of these if they understand the
     # leakage implications.
 
-    # extra_df reserved for future external features (weather, etc.) — no-op
+    # extra_df is intentionally unused here — merging auxiliary sources is
+    # the student's job, in their own make_features() (see my_model.py).
     _ = extra_df
 
     return out
@@ -232,7 +284,11 @@ def _parse_coordonnees(geo_str) -> tuple:
 
 # --- Submission verifier ---
 
-def verify_submission(pkl_path: str, sample_df: pd.DataFrame = None) -> dict:
+def verify_submission(
+    pkl_path: str,
+    sample_df: pd.DataFrame = None,
+    extra_df: dict = None,
+) -> dict:
     """
     Load a .pkl file and verify that its predict() output is valid.
 
@@ -243,6 +299,11 @@ def verify_submission(pkl_path: str, sample_df: pd.DataFrame = None) -> dict:
     sample_df : pd.DataFrame, optional
         A sample DataFrame with AVAILABLE_FEATURES columns.
         Defaults to loading SAMPLE_DATA_PATH (first 50 rows).
+    extra_df : dict[str, pd.DataFrame], optional
+        Auxiliary data sources keyed by source key (contract v2).
+        If provided AND the loaded model's predict() declares an explicit
+        ``extra_df`` parameter, predict is called with it — exactly like
+        the scoring sandbox. Otherwise predict(sample_df) is called v1-style.
 
     Returns
     -------
@@ -268,8 +329,27 @@ def verify_submission(pkl_path: str, sample_df: pd.DataFrame = None) -> dict:
     if not hasattr(model, "predict"):
         return {"valid": False, "message": "Object has no predict() method.", "sample_output": []}
 
+    # Contract-v2 sniffing — mirror of what the scoring sandbox does:
+    # pass extra_df only if predict() declares it as an explicitly named
+    # parameter. A bare **kwargs does NOT count (a raw sklearn Pipeline has
+    # predict(X, **predict_params) and would forward extra_df to its final
+    # estimator, crashing it — the sandbox excludes it on purpose).
+    use_extra = False
+    if extra_df is not None:
+        try:
+            params = inspect.signature(model.predict).parameters
+            use_extra = (
+                "extra_df" in params
+                and params["extra_df"].kind != inspect.Parameter.VAR_KEYWORD
+            )
+        except (TypeError, ValueError):
+            use_extra = False
+
     try:
-        output = model.predict(sample_df)
+        if use_extra:
+            output = model.predict(sample_df, extra_df=extra_df)
+        else:
+            output = model.predict(sample_df)
     except Exception as e:
         return {"valid": False, "message": f"predict() raised an error: {e}", "sample_output": []}
 

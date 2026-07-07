@@ -139,9 +139,68 @@ class MyModel(PastisBaseModel):
         #     df["capacity"], bins=[0, 15, 25, 999], labels=[0, 1, 2]
         # ).astype(int)
 
+        # --- TODO (advanced): auxiliary data — contract v2 ---
+        # No auxiliary source is declared for this scenario today, so
+        # load_aux_data() returns {} and this whole block stays commented.
+        # It shows the upgrade path for the day a source appears
+        # (see notebook "Going Further" -> Level 5).
+        #
+        # Step 1 — switch predict() to the v2 signature so the sandbox
+        # passes the auxiliary dict in (declaring extra_df explicitly is
+        # what opts you in — a **kwargs would NOT be detected):
+        #
+        #     def predict(self, df_raw, extra_df=None):
+        #         X = self.make_features(df_raw, extra_df=extra_df)
+        #         return np.clip(self.model.predict(X), 0.0, 1.0)
+        #
+        # At training time, pass the same dict: model.fit(df, extra_df=aux)
+        # with aux = load_aux_data() — train/serve symmetry is guaranteed.
+        #
+        # Step 2 — join each source yourself. The platform NEVER pre-joins:
+        # picking the join key and handling granularity/missing rows is
+        # where you add value.
+        #
+        # Example A — static per-station source (one row per station),
+        # e.g. a "station_geo" source with elevation:
+        #
+        # if extra_df and "station_geo" in extra_df:
+        #     geo = extra_df["station_geo"].copy()
+        #     geo["stationcode"] = pd.to_numeric(
+        #         geo["stationcode"], errors="coerce"
+        #     ).fillna(0).astype(int)
+        #     features = features.merge(
+        #         geo[["stationcode", "elevation"]],
+        #         on="stationcode", how="left",
+        #     )
+        #
+        # Example B — hourly city-wide source (one row per hour),
+        # e.g. a "weather" source with a parsed datetime column "hour_utc":
+        # snapshot_at is UTC — floor it to the hour to build the join key.
+        # (For wall-clock FEATURES like hour-of-day, convert UTC ->
+        # Europe/Paris exactly like make_basic_features() does; for a
+        # UTC-to-UTC join key, no conversion is needed.)
+        #
+        # if extra_df and "weather" in extra_df:
+        #     hour_utc = pd.to_datetime(df["snapshot_at"], utc=True).dt.floor("h")
+        #     weather = extra_df["weather"].rename(columns={"hour_utc": "_hour"})
+        #     features = (
+        #         features.assign(_hour=hour_utc.values)
+        #         .merge(weather, on="_hour", how="left")
+        #         .drop(columns="_hour")
+        #     )
+        #
+        # LEAKAGE WARNING: never join a source that contains (or derives
+        # from) the target, and compute any join statistics (means, counts)
+        # on the train set only — same rule as station_means above.
+        #
+        # NETWORK WARNING: the scoring sandbox runs with NO network access.
+        # Never call requests/urllib inside predict() or make_features() —
+        # it works locally, then fails at scoring. Auxiliary data must come
+        # in through extra_df, nothing else.
+
         return features
 
-    def fit(self, df_raw: pd.DataFrame) -> None:
+    def fit(self, df_raw: pd.DataFrame, extra_df=None) -> None:
         """
         Train the model on raw data.
 
@@ -149,6 +208,12 @@ class MyModel(PastisBaseModel):
         Step 2: build features (station_mean_rate uses the stats from step 1)
         Step 3: compute target (taux_remplissage)
         Step 4: fit the sklearn estimator
+
+        extra_df (optional) mirrors the contract-v2 predict() signature:
+        a dict {source_key: DataFrame} of auxiliary sources, as returned by
+        load_aux_data(). The sandbox never calls fit() — it receives an
+        already-trained model — so this parameter is purely for your local
+        training symmetry. Ignored unless your make_features() uses it.
         """
         target = compute_target(df_raw)
         # Compute per-station mean fill rate — stored in self for make_features()
@@ -158,7 +223,7 @@ class MyModel(PastisBaseModel):
             .mean()
             .to_dict()
         )
-        X = self.make_features(df_raw)
+        X = self.make_features(df_raw, extra_df=extra_df)
         self.model.fit(X, target)
 
     def predict(self, df_raw: pd.DataFrame) -> np.ndarray:
@@ -283,6 +348,63 @@ def load_full_dataset(
     print(f"\n  Downloaded: {len(df):,} rows, {df['stationcode'].nunique()} stations")
     print(f"  Date range: {df['snapshot_at'].min()} -> {df['snapshot_at'].max()}")
     return df
+
+
+def load_aux_data(cache_dir: str = "aux_data") -> dict:
+    """
+    Download the auxiliary data sources declared for this scenario.
+
+    Contract-v2 companion to load_data():
+    1. GET {API_BASE}/aux lists the declared sources
+    2. each source is downloaded from {API_BASE}/aux/{key}/download and
+       cached in cache_dir/ (delete a file to force a fresh download)
+    3. returns {source_key: DataFrame} — the exact dict shape the sandbox
+       passes to a v2 predict(df, extra_df=...) at scoring time.
+       Train/serve symmetry is guaranteed by the platform: what you
+       download here is what your model will receive.
+
+    No auxiliary source is declared for this scenario today — this returns
+    {} with a clear message. The code is future-proof: the day a source
+    appears, the same call picks it up.
+
+    NOTE: the sandbox delivers datetime columns already parsed. When
+    loading from CSV here, parse them yourself (pd.to_datetime) — or parse
+    defensively inside make_features() so both paths behave the same.
+    """
+    try:
+        r = requests.get(f"{API_BASE}/aux", timeout=30)
+        r.raise_for_status()
+        sources = r.json().get("sources", [])
+    except (requests.RequestException, ValueError):
+        print("Could not list auxiliary sources (endpoint unreachable) — continuing without.")
+        return {}
+
+    if not sources:
+        print("No auxiliary data source is declared for this scenario today.")
+        print("That is expected — see the notebook 'Going Further' -> Level 5 for ideas.")
+        return {}
+
+    os.makedirs(cache_dir, exist_ok=True)
+    extra = {}
+    for src in sources:
+        key = src["key"]
+        path = os.path.join(cache_dir, f"{key}.csv")
+        if os.path.exists(path):
+            print(f"  {key}: using cached {path} (delete it to force a fresh download)")
+        else:
+            print(f"  {key}: downloading — {src.get('description', 'no description')}")
+            with requests.get(
+                f"{API_BASE}/aux/{key}/download",
+                stream=True,
+                timeout=300,
+            ) as resp:
+                resp.raise_for_status()
+                with open(path, "wb") as f:
+                    for chunk in resp.iter_content(chunk_size=8192):
+                        f.write(chunk)
+        extra[key] = pd.read_csv(path)
+        print(f"  {key}: {len(extra[key]):,} rows | columns: {list(extra[key].columns)}")
+    return extra
 
 
 def temporal_split(df: pd.DataFrame, test_fraction: float = 0.2):
