@@ -118,6 +118,12 @@ def predict(self, df_raw: pd.DataFrame) -> np.ndarray:
 
 The Pastis sandbox calls exactly these two methods — do not change their signatures.
 
+> **Contract v2 (optional):** if the scenario declares auxiliary data sources
+> (weather, geography, ...), your `predict()` can opt in to receive them by
+> declaring an explicit `extra_df` parameter — see *Going Further → Level 5*
+> in [starter.ipynb](starter.ipynb). Contract v1 above stays fully valid;
+> no source is declared for this scenario today.
+
 ---
 
 ## Metric: Brier Score

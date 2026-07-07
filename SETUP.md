@@ -225,6 +225,12 @@ print(r.json()["stations"])
 r = requests.get("https://pastis.ai/api/scenarios/velib-predict-dispo/stats")
 stats = r.json()
 print(f"From {stats['first_snapshot']} to {stats['last_snapshot']}")
+
+# List auxiliary data sources (contract v2 — empty for this scenario today)
+# Each declared source can be downloaded from /aux/{key}/download.
+# Prefer load_aux_data() in my_model.py, which does both steps with caching.
+r = requests.get("https://pastis.ai/api/scenarios/velib-predict-dispo/aux")
+print(r.json()["sources"])
 ```
 
 **Download a filtered dataset:**
