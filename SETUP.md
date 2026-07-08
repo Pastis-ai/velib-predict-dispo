@@ -170,6 +170,31 @@ python my_model.py --verify
 
 ---
 
+## Optional — skore, for comparing your models
+
+Later in the journey (the **Bonus — Pick Your Champion** section of
+`starter.ipynb`) you may want to compare several candidate models side by side
+before choosing which one to submit. The kit uses [skore](https://skore.probabl.ai/)
+for this — optional and local-only:
+
+```bash
+pip install skore==0.23.0 ipywidgets
+```
+
+- **Why it is not in `requirements.txt`:** that file mirrors the scoring
+  sandbox exactly, and the sandbox never runs skore. It is a local analysis
+  tool, not a submission dependency.
+- **Why ipywidgets:** it only renders skore's progress bars in the notebook —
+  without it, every skore cell prints a harmless warning.
+- **Why the version is pinned:** skore's API moves fast between minor
+  releases. `skore==0.23.0` is verified to install cleanly next to the frozen
+  stack — scikit-learn 1.4.2, numpy 1.26.4 and pandas 2.2.2 stay untouched.
+- **Fully local:** no account, no login, no network calls after install.
+
+Skip this on day 1 — the notebook tells you when it becomes useful.
+
+---
+
 ## Troubleshooting
 
 ### "python3.12: command not found" (macOS)

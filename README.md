@@ -17,6 +17,24 @@ This is a **regression** problem. Your model must output a value between 0 and 1
 
 ---
 
+## Your learning path
+
+The kit is a journey — you do **not** need everything on day 1:
+
+| Stage | Where | What you do |
+|-------|-------|-------------|
+| **1. First submission** | [starter.ipynb](starter.ipynb), Sections 0–7 | Understand the data, train the starter model, submit — day 1 goal |
+| **2. Iterate** | Going Further, Levels 1–3 | Feature engineering, better model, tuning — where the points are won |
+| **3. Compare & choose** | Bonus section (end of notebook) | Audit your candidate models side by side, pick a champion |
+| **4. Scale up** | Level 4 | More months, more arrondissements from the API |
+| **5. Expert** | Level 5 | External / auxiliary data (contract v2) |
+
+Feature engineering, model comparison and external data all come **later** in
+the journey — the notebook tells you when. Day 1 is about getting a valid
+`submission.pkl` on the leaderboard.
+
+---
+
 ## Quickstart — Google Colab (no setup required)
 
 1. Click the **Open in Colab** badge above
@@ -177,6 +195,25 @@ df = pd.read_csv("velib.csv", parse_dates=["snapshot_at"])
 ```
 
 See [SETUP.md](SETUP.md) for all endpoints, filtering options, and volume estimates.
+
+---
+
+## Compare your models before submitting (optional, advanced)
+
+Once you have iterated and hold **several candidate models**, the
+**Bonus — Pick Your Champion** section at the end of
+[starter.ipynb](starter.ipynb) shows how to audit and compare them side by
+side with [skore](https://skore.probabl.ai/) — an open-source model-evaluation
+library by Probabl (founded by scikit-learn core developers) — and pick the
+one worth submitting.
+
+- **Optional and advanced** — nothing on day 1 requires it; come back after
+  Going Further Levels 1–3, when you actually have models to compare.
+- **Local only** — `pip install skore==0.23.0 ipywidgets` (pinned; verified to
+  leave the frozen `requirements.txt` versions untouched). No account, no
+  network calls after install; works locally and on Colab.
+- **Zero impact on the submission contract** — the `.pkl` you upload is still
+  produced by `export_submission()`; skore never ships inside it.
 
 ---
 

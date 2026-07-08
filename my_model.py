@@ -526,6 +526,10 @@ def main():
     # Never use KFold or train_test_split(shuffle=True) on time series —
     # that would leak future data into the training folds.
     #
+    # Tuning leaves you with several candidate models. The "Bonus — Pick Your
+    # Champion" section at the end of starter.ipynb shows how to compare them
+    # side by side with skore before choosing the one to submit.
+    #
     # from sklearn.model_selection import GridSearchCV, TimeSeriesSplit
     # X_train = model.make_features(df_train)
     # y_train = compute_target(df_train).values
