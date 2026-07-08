@@ -187,8 +187,9 @@ pip install skore==0.23.0 ipywidgets
 - **Why ipywidgets:** it only renders skore's progress bars in the notebook —
   without it, every skore cell prints a harmless warning.
 - **Why the version is pinned:** skore's API moves fast between minor
-  releases. `skore==0.23.0` is verified to install cleanly next to the frozen
-  stack — scikit-learn 1.4.2, numpy 1.26.4 and pandas 2.2.2 stay untouched.
+  releases. `skore==0.23.0` is verified to install cleanly next to the pinned
+  stack — scikit-learn 1.9.0, numpy 2.5.1 and pandas 2.3.3 stay untouched —
+  and scikit-learn 1.9 is inside skore's officially tested support matrix.
 - **Fully local:** no account, no login, no network calls after install.
 
 Skip this on day 1 — the notebook tells you when it becomes useful.
