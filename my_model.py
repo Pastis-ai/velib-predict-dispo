@@ -277,8 +277,8 @@ def load_data() -> pd.DataFrame:
 
 
 def load_full_dataset(
-    date_from: str = "2026-02-01",
-    date_to: str = "2026-05-31",
+    date_from: str | None = None,
+    date_to: str | None = None,
     arrondissements: list[str] | None = None,
     cache_path: str = "velib_full.csv",
 ) -> pd.DataFrame:
@@ -286,7 +286,7 @@ def load_full_dataset(
     Download the FULL training dataset from the Pastis API.
 
     WARNING — this can be very large and slow:
-    - All arrondissements over several months = millions of rows
+    - All arrondissements over the full history = millions of rows
     - The dataset grows every day as new snapshots are scraped
     - Expect long download times and high memory usage on a laptop
 
@@ -295,8 +295,16 @@ def load_full_dataset(
 
     Parameters
     ----------
-    date_from, date_to : str
-        Date range (YYYY-MM-DD). Wider range = more data = slower.
+    date_from, date_to : str, optional
+        Date range (YYYY-MM-DD). Default None/None = no bound: the API
+        returns everything it has collected so far. Because the dataset is
+        scraped continuously, "no date limit" always means "all of history
+        up to right now" — it grows a little every day, it is not a fixed
+        window. Pass explicit values to scope down to a smaller/faster
+        download. An out-of-range value (e.g. a date_to in the future, or a
+        date_from before data collection started) is not an error — the API
+        silently clamps it to the real availability window, so you do not
+        need to know the exact collection start date yourself.
     arrondissements : list[str], optional
         Filter to specific arrondissements (e.g. ["Paris 18e", "Paris 19e"]).
         Use the EXACT names returned by the /arrondissements endpoint:
@@ -305,24 +313,33 @@ def load_full_dataset(
         None = ALL arrondissements (largest possible download).
     cache_path : str
         Local file to cache the download. If it exists, it is reused
-        instead of re-downloading (delete it to force a fresh pull).
+        instead of re-downloading (delete it to force a fresh pull) —
+        including when you widen the date range or the live dataset has
+        grown since the cache was made. Delete the file to pick up either.
 
     Returns
     -------
     pd.DataFrame with parsed snapshot_at.
     """
+    if date_from is not None and date_to is not None and date_from > date_to:
+        raise ValueError(f"date_from ({date_from}) is after date_to ({date_to})")
+
     # Reuse cached file if present — avoids re-downloading on every run
     if os.path.exists(cache_path):
         print(f"Using cached full dataset: {cache_path}")
-        print(f"  (delete {cache_path} to force a fresh download)")
+        print(f"  (delete {cache_path} to force a fresh download — e.g. if you widened the date range, or the live dataset has grown since this cache was made)")
         return pd.read_csv(cache_path, parse_dates=["snapshot_at"])
 
-    params = {"date_from": date_from, "date_to": date_to}
+    params = {}
+    if date_from is not None:
+        params["date_from"] = date_from
+    if date_to is not None:
+        params["date_to"] = date_to
     if arrondissements:
         params["arrondissements"] = arrondissements
 
     print(f"Downloading full dataset from API...")
-    print(f"  Period          : {date_from} -> {date_to}")
+    print(f"  Period          : {date_from or 'earliest available'} -> {date_to or 'latest available (now)'}")
     print(f"  Arrondissements : {arrondissements or 'ALL (this is large!)'}")
     print(f"  This may take several minutes. Be patient.")
 
@@ -442,6 +459,16 @@ def main():
         action="store_true",
         help="Train on the full dataset from the API (large, slow — prefer Colab)",
     )
+    parser.add_argument(
+        "--date-from",
+        default=None,
+        help="With --full: restrict to snapshots from this date (YYYY-MM-DD). Default: earliest available.",
+    )
+    parser.add_argument(
+        "--date-to",
+        default=None,
+        help="With --full: restrict to snapshots up to this date (YYYY-MM-DD). Default: latest available (now).",
+    )
     args = parser.parse_args()
 
     # --- Verify-only mode ---
@@ -456,7 +483,7 @@ def main():
     # --- [1/5] Load data ---
     if args.full:
         print("\n[1/5] Loading FULL dataset from API (this is large)...")
-        df = load_full_dataset()
+        df = load_full_dataset(date_from=args.date_from, date_to=args.date_to)
     else:
         print("\n[1/5] Loading local dev dataset...")
         df = load_data()
