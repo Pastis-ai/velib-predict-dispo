@@ -152,7 +152,7 @@ $$BS = \frac{1}{n} \sum_{i=1}^{n} (p_i - y_i)^2$$
 - **Lower Brier Score = better model**
 - **Leaderboard score = (1 − BS) × 100** — higher is better
 
-The Brier Score works identically for regression on [0, 1] and for binary classification probabilities.
+Here the Brier Score is simply the mean squared error on the continuous fill rate — **not** `sklearn.metrics.brier_score_loss`, which is reserved for binary-classification probabilities. Your model outputs a rate in [0, 1], so it is scored directly against the true rate.
 
 | BS | Score | Interpretation |
 |----|-------|----------------|

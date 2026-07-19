@@ -384,34 +384,38 @@ def verify_submission(
 
 # --- Brier Score helper ---
 
-def brier_score_local(y_true, y_proba, label: str = "") -> float:
+def brier_score_local(y_true, y_pred, label: str = "") -> float:
     """
-    Compute Brier Score = MSE(y_true, y_pred) for values in [0, 1].
+    Compute the leaderboard metric: Brier Score = MSE(y_true, y_pred).
 
-    Works for both:
-    - Binary classification: y_true in {0, 1}, y_pred in [0, 1]
-    - Regression on [0, 1]: y_true = taux_remplissage, y_pred in [0, 1]
+    This is a REGRESSION metric on the continuous fill rate — the mean
+    squared error between the predicted taux_remplissage and the true one,
+    both in [0.0, 1.0]. It is NOT sklearn.metrics.brier_score_loss, which is
+    reserved for binary-classification probabilities: here y_true is a
+    continuous rate, not a 0/1 label, so we compute the squared error
+    directly.
 
-    Lower is better. Baseline (always predict mean) → ~0.05–0.15.
+    Lower is better. On the dev dataset the naive baseline (always predict
+    the training mean) scores ≈ 0.037 — roughly the variance of the target.
 
     Parameters
     ----------
     y_true : array-like
-        Ground truth values in [0, 1].
-    y_proba : array-like
-        Predicted values in [0, 1].
+        True taux_remplissage, values in [0, 1].
+    y_pred : array-like
+        Predicted taux_remplissage, values in [0, 1].
     label : str, optional
         Label prefix for the printed output lines.
 
     Returns
     -------
     float
-        The Brier Score.
+        The Brier Score (mean squared error).
     """
     y_true = np.array(y_true, dtype=float)
-    y_proba = np.array(y_proba, dtype=float)
+    y_pred = np.array(y_pred, dtype=float)
 
-    bs = float(np.mean((y_proba - y_true) ** 2))
+    bs = float(np.mean((y_pred - y_true) ** 2))
     leaderboard = (1 - bs) * 100
     prefix = f"{label} — " if label else ""
     print(f"{prefix}Brier Score      : {bs:.4f}  (lower is better)")
