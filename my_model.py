@@ -26,10 +26,19 @@ from pastis_velib import (
     AVAILABLE_FEATURES,
     make_basic_features,
     compute_target,
+    station_key,
+    as_serve_frame,
     verify_submission,
     brier_score_local,
     SAMPLE_DATA_PATH,
 )
+
+# Raw-column dtypes, pinned so they never depend on what pandas infers.
+# stationcode is the one that matters: it is used as a dict key, and the
+# full API export contains a few rows with an empty stationcode, which is
+# enough for pandas to read the whole column as float64 ("20001.0" instead
+# of "20001"). Pin it at every read_csv — see station_key() for the rest.
+RAW_DTYPES = {"stationcode": "string"}
 
 # --- Configuration ---
 DATA_PATH  = "velib_dataset_dev.csv"
@@ -117,11 +126,16 @@ class MyModel(PastisBaseModel):
         #
         # IMPORTANT: self.station_means is computed in fit() from training data only.
         # We never use test data to compute this — that would be data leakage.
+        #
+        # station_key() — not .astype(str) — on BOTH sides of the lookup.
+        # fit() and this line must produce byte-identical keys, or every
+        # station falls back to 0.2 and this feature silently dies. See
+        # station_key() in pastis_velib.py for why that is not theoretical.
         if self.station_means:
             features["station_mean_rate"] = (
-                df["stationcode"]
-                .astype(str)
+                station_key(df["stationcode"])
                 .map(self.station_means)
+                .astype(float)
                 .fillna(0.2)   # fallback for stations not seen during training
             )
 
@@ -219,7 +233,7 @@ class MyModel(PastisBaseModel):
         # Compute per-station mean fill rate — stored in self for make_features()
         self.station_means = (
             df_raw.assign(_target=target)
-            .groupby(df_raw["stationcode"].astype(str))["_target"]
+            .groupby(station_key(df_raw["stationcode"]))["_target"]
             .mean()
             .to_dict()
         )
@@ -249,7 +263,7 @@ def load_data() -> pd.DataFrame:
     """
     if os.path.exists(DATA_PATH):
         print(f"Loading local dataset: {DATA_PATH}")
-        df = pd.read_csv(DATA_PATH, parse_dates=["snapshot_at"])
+        df = pd.read_csv(DATA_PATH, parse_dates=["snapshot_at"], dtype=RAW_DTYPES)
     else:
         print("Local file not found — downloading from API...")
         params = {
@@ -267,7 +281,7 @@ def load_data() -> pd.DataFrame:
             with open(DATA_PATH, "wb") as f:
                 for chunk in r.iter_content(chunk_size=8192):
                     f.write(chunk)
-        df = pd.read_csv(DATA_PATH, parse_dates=["snapshot_at"])
+        df = pd.read_csv(DATA_PATH, parse_dates=["snapshot_at"], dtype=RAW_DTYPES)
 
     fill_rate = compute_target(df).mean()
     print(f"  {len(df):,} rows | {df['stationcode'].nunique()} stations")
@@ -328,7 +342,7 @@ def load_full_dataset(
     if os.path.exists(cache_path):
         print(f"Using cached full dataset: {cache_path}")
         print(f"  (delete {cache_path} to force a fresh download — e.g. if you widened the date range, or the live dataset has grown since this cache was made)")
-        return pd.read_csv(cache_path, parse_dates=["snapshot_at"])
+        return pd.read_csv(cache_path, parse_dates=["snapshot_at"], dtype=RAW_DTYPES)
 
     params = {}
     if date_from is not None:
@@ -361,7 +375,7 @@ def load_full_dataset(
                     pct = downloaded / total * 100
                     print(f"    {downloaded/1e6:.0f} MB ({pct:.0f}%)", end="\r")
 
-    df = pd.read_csv(cache_path, parse_dates=["snapshot_at"])
+    df = pd.read_csv(cache_path, parse_dates=["snapshot_at"], dtype=RAW_DTYPES)
     print(f"\n  Downloaded: {len(df):,} rows, {df['stationcode'].nunique()} stations")
     print(f"  Date range: {df['snapshot_at'].min()} -> {df['snapshot_at'].max()}")
     return df
@@ -478,6 +492,8 @@ def main():
         print(f"  Valid   : {result['valid']}")
         print(f"  Message : {result['message']}")
         print(f"  Sample  : {result['sample_output']}")
+        for w in result["warnings"]:
+            print(f"  ⚠  {w}")
         return
 
     # --- [1/5] Load data ---
@@ -525,6 +541,23 @@ def main():
         improvement_pct = (bs_baseline - bs_model) / bs_baseline * 100
         print(f"  ✓  {improvement_pct:.1f}% improvement over baseline")
 
+    # --- Serve-shape check ---
+    # The score above cannot detect a train/serve mismatch: y_pred was
+    # computed on df_test, which came out of the same loader, with the same
+    # dtypes, as the training data. The sandbox builds its own frame from the
+    # raw columns — so a model that secretly depends on your loader scores
+    # perfectly here and collapses there. Re-score the exact same rows in
+    # serve shape; the two numbers must be identical.
+    y_pred_serve = model.predict(as_serve_frame(df_test))
+    bs_serve = float(np.mean((y_pred_serve - y_test) ** 2))
+    if np.isclose(bs_serve, bs_model, atol=1e-9):
+        print(f"  ✓  Serve-shape check passed (BS unchanged: {bs_serve:.4f})")
+    else:
+        print(f"  ⚠  SERVE-SHAPE MISMATCH: {bs_model:.4f} here -> {bs_serve:.4f} at scoring")
+        print("     Your model reads something the sandbox will not reproduce.")
+        print("     Most common cause: a per-station dict keyed on a dtype your")
+        print("     loader produced and the sandbox does not — use station_key().")
+
     # Retrain on full dataset before export
     print(f"\nRetraining on full dataset before export...")
     t0 = time.time()
@@ -540,6 +573,8 @@ def main():
     print(f"  Valid   : {result['valid']}")
     print(f"  Message : {result['message']}")
     print(f"  Sample  : {result['sample_output']}")
+    for w in result["warnings"]:
+        print(f"  ⚠  {w}")
 
     if result["valid"]:
         print("\nReady to upload submission.pkl to https://pastis.ai")

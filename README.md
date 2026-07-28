@@ -166,6 +166,13 @@ small dataset every model is compressed into the 96–100 range. The competition
 in that 1–4 point gap. Download more data from the API and the variance — and the
 competitive range — grows.
 
+> **The table above is measured on the dev dataset; the leaderboard is not.** Scoring
+> runs on all of Paris, where the fill rate varies much more (variance ≈ 0.08 rather
+> than 0.037) — the same naive baseline lands near **92** there, not 96.3. Neither
+> number is wrong; they are measured on different data. Always compare your model to
+> the baseline **on the same dataset**, and never read a local score against a
+> leaderboard one.
+
 **Your goal: beat the baseline. Aim for a meaningful improvement through feature engineering.**
 
 ---
