@@ -467,8 +467,12 @@ def verify_submission(
     # lookup misses, every fillna(default) fires, and the output collapses
     # to a single plausible value. Warn, never fail — only the author knows
     # which of the two they meant.
+    #
+    # max == min rather than std == 0: np.std over thousands of identical
+    # float64 values returns ~1e-17, not an exact zero, so a std test would
+    # miss the very constant it is looking for on any realistic frame.
     warnings = []
-    if len(output) > 1 and float(np.std(output)) == 0.0:
+    if len(output) > 1 and float(np.max(output)) == float(np.min(output)):
         warnings.append(
             f"All {len(output)} predictions are identical ({output[0]:.4f}). "
             "Intended for a constant baseline — otherwise your lookup keys "
