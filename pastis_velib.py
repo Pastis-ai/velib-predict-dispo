@@ -148,6 +148,79 @@ def compute_target(df: pd.DataFrame) -> pd.Series:
     return rate.fillna(0.0).clip(0.0, 1.0)
 
 
+# --- Station key normalisation ---
+
+def station_key(codes) -> pd.Series:
+    """
+    Canonical station key — identical whatever dtype stationcode arrives as.
+
+    Use this every time you build a per-station dict / groupby key, and
+    every time you look one up. Never use ``stationcode.astype(str)``
+    directly.
+
+    Why this exists
+    ---------------
+    ``stationcode`` does not always parse to the same dtype. The committed
+    dev CSV is clean, so pandas infers int64 and ``astype(str)`` gives
+    "20001". The full API export contains a handful of rows with an empty
+    stationcode, so pandas infers float64 instead — and the very same
+    ``astype(str)`` now gives "20001.0".
+
+    Build a dict with one form, look it up with the other, and *nothing*
+    matches. There is no error: the lookup simply returns NaN, your
+    ``fillna(default)`` turns it into a plausible number, and the feature
+    silently becomes a constant. A model trained that way validates fine
+    locally and collapses at scoring time.
+
+    Returns
+    -------
+    pd.Series
+        StringDtype series, same index as the input. Missing codes are
+        <NA> — not the string "nan" — so groupby() drops them from the
+        statistics and map() leaves them unmatched, letting them follow
+        the normal fallback path instead of forming a bogus bucket.
+    """
+    s = pd.Series(codes).astype("string").str.strip()
+    # "20001.0" -> "20001": undo float inference, whatever the source dtype.
+    s = s.str.replace(r"^(\d+)\.0+$", r"\1", regex=True)
+    return s.replace("", pd.NA)
+
+
+def as_serve_frame(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Rebuild a DataFrame the way the scoring sandbox delivers it.
+
+    The sandbox does not hand you the frame your loader produced — it
+    builds its own from the raw scenario columns. Its dtypes are whatever
+    *its* reader inferred, not whatever yours did. That is precisely how a
+    train/serve skew survives a holdout evaluation: the holdout reuses the
+    training frame, so it can never observe the difference.
+
+    Normalises a frame back to the raw, serve-side shape:
+    - only the AVAILABLE_FEATURES columns, in contract order
+    - stationcode as plain strings, no float artefact ("20001", not "20001.0")
+    - snapshot_at as the raw timestamp strings the CSV and API serve
+    - a fresh RangeIndex
+
+    Use it as a second evaluation, not a replacement::
+
+        bs_holdout = brier_score_local(y_test, model.predict(df_test))
+        bs_serve   = brier_score_local(y_test, model.predict(as_serve_frame(df_test)))
+
+    The two numbers must match. If they do not, the model depends on
+    something the sandbox will not reproduce — most often a per-station
+    dict keyed on a dtype that only exists in your loader (see
+    ``station_key``).
+    """
+    out = df.copy()
+    out["stationcode"] = station_key(out["stationcode"])
+    out["snapshot_at"] = (
+        pd.to_datetime(out["snapshot_at"], utc=True).dt.tz_convert(None).astype(str)
+    )
+    cols = [c for c in AVAILABLE_FEATURES if c in out.columns]
+    return out[cols].reset_index(drop=True)
+
+
 # --- Feature engineering helper ---
 
 # --- Why these features and not others? ---
@@ -308,7 +381,11 @@ def verify_submission(
     Returns
     -------
     dict
-        {"valid": bool, "message": str, "sample_output": list}
+        {"valid": bool, "message": str, "warnings": list[str],
+         "sample_output": list}
+
+        "warnings" holds non-blocking remarks — things that are legal under
+        the contract but usually indicate a bug. Always present, often empty.
     """
     if sample_df is None:
         try:
@@ -317,6 +394,7 @@ def verify_submission(
             return {
                 "valid": False,
                 "message": f"Sample file not found: {SAMPLE_DATA_PATH}",
+                "warnings": [],
                 "sample_output": [],
             }
 
@@ -324,10 +402,12 @@ def verify_submission(
         with open(pkl_path, "rb") as f:
             model = pickle.load(f)
     except Exception as e:
-        return {"valid": False, "message": f"Could not load .pkl: {e}", "sample_output": []}
+        return {"valid": False, "message": f"Could not load .pkl: {e}",
+                "warnings": [], "sample_output": []}
 
     if not hasattr(model, "predict"):
-        return {"valid": False, "message": "Object has no predict() method.", "sample_output": []}
+        return {"valid": False, "message": "Object has no predict() method.",
+                "warnings": [], "sample_output": []}
 
     # Contract-v2 sniffing — mirror of what the scoring sandbox does:
     # pass extra_df only if predict() declares it as an explicitly named
@@ -351,12 +431,14 @@ def verify_submission(
         else:
             output = model.predict(sample_df)
     except Exception as e:
-        return {"valid": False, "message": f"predict() raised an error: {e}", "sample_output": []}
+        return {"valid": False, "message": f"predict() raised an error: {e}",
+                "warnings": [], "sample_output": []}
 
     if not isinstance(output, np.ndarray):
         return {
             "valid": False,
             "message": f"predict() must return np.ndarray, got {type(output).__name__}.",
+            "warnings": [],
             "sample_output": [],
         }
 
@@ -364,6 +446,7 @@ def verify_submission(
         return {
             "valid": False,
             "message": f"Shape mismatch: expected ({len(sample_df)},), got {output.shape}.",
+            "warnings": [],
             "sample_output": [],
         }
 
@@ -372,12 +455,30 @@ def verify_submission(
         return {
             "valid": False,
             "message": f"Values out of [0, 1]: {bad[:5]}",
+            "warnings": [],
             "sample_output": output.tolist()[:5],
         }
+
+    # Dispersion check — the one the other three miss.
+    # "No crash", "no NaN" and "inside [0, 1]" are all satisfied by a model
+    # that returns the same number for every row. That is a legitimate
+    # model (a constant baseline is exactly that), but it is also what a
+    # per-station lookup looks like once its keys stop matching: every
+    # lookup misses, every fillna(default) fires, and the output collapses
+    # to a single plausible value. Warn, never fail — only the author knows
+    # which of the two they meant.
+    warnings = []
+    if len(output) > 1 and float(np.std(output)) == 0.0:
+        warnings.append(
+            f"All {len(output)} predictions are identical ({output[0]:.4f}). "
+            "Intended for a constant baseline — otherwise your lookup keys "
+            "are not matching (see station_key)."
+        )
 
     return {
         "valid": True,
         "message": "Submission is valid. Ready to upload to pastis.ai.",
+        "warnings": warnings,
         "sample_output": output.tolist()[:5],
     }
 
