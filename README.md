@@ -168,10 +168,13 @@ competitive range — grows.
 
 > **The table above is measured on the dev dataset; the leaderboard is not.** Scoring
 > runs on all of Paris, where the fill rate varies much more (variance ≈ 0.08 rather
-> than 0.037) — the same naive baseline lands near **92** there, not 96.3. Neither
-> number is wrong; they are measured on different data. Always compare your model to
-> the baseline **on the same dataset**, and never read a local score against a
-> leaderboard one.
+> than 0.037) — the same naive baseline lands around **91** there, not 96.3. Neither
+> number is wrong; they are measured on different data.
+>
+> Two habits follow. Compare your model to the baseline **on the same dataset** —
+> a local score and a leaderboard score are different quantities, not a before/after.
+> And expect your leaderboard score to move between runs even when your model does
+> not: each run is scored on a fresh snapshot, so read it as a range, not a value.
 
 **Your goal: beat the baseline. Aim for a meaningful improvement through feature engineering.**
 
