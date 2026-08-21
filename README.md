@@ -115,7 +115,26 @@ The included CSV (`velib_dataset_dev.csv`) covers **April 14–30, 2026** in the
 
 Unlike a sample from the 1st arrondissement (where stations are almost never empty), these outer arrondissements have **genuine variance**: stations that drain completely during rush hours, different weekday vs weekend patterns, and real prediction challenges.
 
-> Use the dev CSV to develop your pipeline. Download more data from the API to improve your leaderboard score.
+### Three data surfaces, and they are not meant to match
+
+| | What it is | Should it look like the scoring snapshot? |
+|---|---|---|
+| **1. `velib_dataset_dev.csv`** | An **exploration** fixture: small, fixed, fully known, so the notebook's commentary and charts stay true | **No** |
+| **2. `/download` API** | The real **training** set: complete, current, 24 h embargo | Yes, as far as possible |
+| **3. Live snapshot** | The 12 served columns, at scoring time | It *is* the reference |
+
+The contract that has to hold is **2 ↔ 3**. The CSV is there to be *looked at*.
+
+> **The CSV is for exploring — it contains everything, answers included. Your
+> model will only ever receive the 12 columns of `as_serve_frame()`. Explore on
+> the CSV, train on the API.**
+
+Both surfaces carry the same twelve columns: seven trainable features plus the
+five answers. Five *other* columns
+(`nom_arrondissement_communes_raw`, `code_insee_commune`,
+`station_opening_hours`, `is_installed`, `is_returning`) are served at scoring
+and exist in neither — a model trained on the seven receives twelve and ignores
+the extra five, with no error. Read them with `df.get(...)` if you want them.
 
 ---
 
@@ -141,6 +160,123 @@ The Pastis sandbox calls exactly these two methods — do not change their signa
 > declaring an explicit `extra_df` parameter — see *Going Further → Level 5*
 > in [starter.ipynb](starter.ipynb). Contract v1 above stays fully valid;
 > no source is declared for this scenario today.
+
+### What `predict()` actually receives
+
+`fit()` and `predict()` do **not** see the same columns, and this is the single
+most important thing to understand before you engineer a feature.
+
+Your training CSV has everything. The live snapshot your model is scored on is
+passed through a **whitelist** first — these twelve columns, and nothing else:
+
+| Column | Also in the training data? |
+|--------|----------------------------|
+| `stationcode` | ✅ |
+| `name` | ✅ |
+| `capacity` | ✅ |
+| `snapshot_at` | ✅ |
+| `coordonnees_geo` | ✅ |
+| `nom_arrondissement_communes` | ✅ |
+| `is_renting` | ✅ |
+| `nom_arrondissement_communes_raw` | ❌ scoring only |
+| `code_insee_commune` | ❌ scoring only |
+| `station_opening_hours` | ❌ scoring only |
+| `is_installed` | ❌ scoring only |
+| `is_returning` | ❌ scoring only |
+
+The five marked *scoring only* are served to your model but absent from **both**
+the dev CSV and the `/download` API, so you cannot train on them at all today —
+read them defensively (`df.get("is_returning")`) if you use them. A model
+trained on the seven available features simply ignores the extra five it is
+handed at scoring: no error, nothing to fix.
+
+### Target leakage — the five columns, and why they have a name
+
+```
+numbikesavailable · numdocksavailable · mechanical · ebike · has_bike
+```
+
+These are in your training data — you need `numbikesavailable` to build the
+target, and there is no supervised learning without the answer — and they are
+**stripped from the snapshot before `predict()` runs**. Each one is the answer
+in a different disguise:
+
+- `numbikesavailable` — the target, literally
+- `mechanical + ebike` — sums to `numbikesavailable` exactly
+- `numdocksavailable` — `capacity − numdocksavailable` is the target, near-exactly
+- `has_bike` — `target > 0`
+
+Putting one of these in your `X` has a name: **target leakage**. And
+`numdocksavailable` is the case worth remembering, because it does not look
+like cheating — it looks like a perfectly reasonable feature. It is
+`capacity − answer`. Train on it, get an R² of 0.99 on your laptop, and watch
+the leaderboard score collapse without understanding why.
+
+So these columns are not forbidden in the abstract. They are forbidden **at
+serve time** — because at the moment the prediction actually matters, nobody
+knows how many bikes are at the station. That is the entire point of the
+scenario.
+
+Every upload is probed: the platform runs your model twice on two frames
+identical over the twelve served columns and **opposite** over these five. If
+your predictions move on more than 5% of rows, the submission is refused. The
+probe is simply the question *"does your model still say the same thing when I
+lie to it about the answer?"*
+
+### Four more ways a submission gets refused
+
+| Check | Rule |
+|-------|------|
+| **Determinism** | Two runs on the same input must agree to `1e-9`. Set `random_state=` / `np.random.seed()` everywhere it exists. |
+| **Time** | `predict()` must finish in **60 s on a full snapshot** (~1500 rows). That is the budget of *every* scoring cycle, not a one-off allowance. |
+| **File size** | 50 MB maximum. Empty or truncated files are refused. Store statistics in your model, not the training frame. |
+| **Identical resubmission** | Uploading a file **byte-identical** to one you already submitted is refused (409), naming your previous submission and its date. Since every export produces a new file, this means you picked up an old `.pkl` instead of the one you just wrote. |
+
+> **On models that resemble each other.** Two submissions with identical
+> predictions have several possible explanations — a shared tutorial, a public
+> model, a pair working together, a copy. Because that fact is *interpretable*
+> in more than one way, it is never grounds for an automatic refusal: it is
+> flagged to a teacher, and your model is never blocked or penalised for
+> resembling someone else's. The four checks above are refusals precisely
+> because they admit only one reading.
+
+Two different fingerprints exist, and they answer two different questions:
+
+| Fingerprint | What it covers | What it actually catches |
+|---|---|---|
+| **`sha256` of the file** | the **bytes** | provenance — which exact artefact was submitted, when, by whom. And an accidental re-upload of the same file (409) |
+| **Prediction fingerprint** | the **behaviour** | similarity between models, re-exported or not. It only ever flags |
+
+The file hash is a record, not a filter: re-exporting a model changes its
+`sha256` without changing a line of code, so no `.pkl` is ever blocked on its
+hash.
+
+The sandbox also runs with **no network access** (`--network none`). Any
+`requests` / `urllib` call inside `predict()` works on your laptop and fails at
+scoring. External data must arrive through `extra_df` (contract v2) or not at all.
+
+### Check all of this before you upload
+
+`python my_model.py` ends with a **preflight** that replays the platform's own
+checks on your machine:
+
+```
+Preflight — replaying the platform's submission checks:
+  ✓  determinism: two runs on the same input are identical.
+  ✓  reads the answer: predictions are stable (0.0% of rows moved, limit 5%).
+  ✓  time budget: 0.04s on 1500 rows (budget 60s).
+  → Ready to upload.
+```
+
+You can also call it directly on any model, trained or reloaded:
+
+```python
+from pastis_velib import preflight_check
+preflight_check(model, df)
+```
+
+A rejection you find here costs a minute. The same rejection found on the
+submission page costs a session.
 
 ---
 
@@ -168,10 +304,26 @@ competitive range — grows.
 
 > **The table above is measured on the dev dataset; the leaderboard is not.** Scoring
 > runs on all of Paris, where the fill rate varies much more (variance ≈ 0.08 rather
-> than 0.037) — the same naive baseline lands near **92** there, not 96.3. Neither
-> number is wrong; they are measured on different data. Always compare your model to
-> the baseline **on the same dataset**, and never read a local score against a
-> leaderboard one.
+> than 0.037) — the same naive baseline lands around **91** there, not 96.3. Neither
+> number is wrong; they are measured on different data.
+>
+> Two habits follow. Compare your model to the baseline **on the same dataset** —
+> a local score and a leaderboard score are different quantities, not a before/after.
+> And expect your leaderboard score to move between runs even when your model does
+> not: each run is scored on a fresh snapshot, so read it as a range, not a value.
+
+To make the two scales concrete — measured on the live leaderboard on **2026-08-14**:
+
+| On the live leaderboard | Score |
+|---|---|
+| Naive baseline (predict the mean) | ~91 |
+| Statistical reference models | ~95.6 |
+| Best student model observed | 94.95 |
+
+So the 97.7 in the table above, measured on a historical holdout, is **not** a
+prediction of where you will land. If your local number is higher than
+everything in this list, that is expected — it is a different measurement, not a
+better model. Only the leaderboard counts.
 
 **Your goal: beat the baseline. Aim for a meaningful improvement through feature engineering.**
 
@@ -226,10 +378,11 @@ one worth submitting.
 
 ## Submit
 
-1. Train your model: `python my_model.py`
-2. Verify the output: `python my_model.py --verify`
-3. Go to the [submission page](https://pastis.ai/scenarios/velib-predict-dispo?tab=submit) and upload `submission.pkl`
-4. Check the leaderboard!
+1. Train your model: `python my_model.py` — it exports, verifies **and** preflights
+2. Re-check an existing file at any time: `python my_model.py --verify`
+3. Only upload once the preflight prints `→ Ready to upload`
+4. Go to the [submission page](https://pastis.ai/scenarios/velib-predict-dispo?tab=submit) and upload `submission.pkl`
+5. Check the leaderboard!
 
 > On the leaderboard you appear under a stable botanical pseudonym by default —
 > never your real name unless you choose to reveal it.

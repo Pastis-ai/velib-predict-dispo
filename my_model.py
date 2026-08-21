@@ -24,10 +24,12 @@ from sklearn.ensemble import HistGradientBoostingRegressor
 from pastis_velib import (
     PastisBaseModel,
     AVAILABLE_FEATURES,
+    ANSWER_COLUMNS,
     make_basic_features,
     compute_target,
     station_key,
     as_serve_frame,
+    preflight_check,
     verify_submission,
     brier_score_local,
     SAMPLE_DATA_PATH,
@@ -116,6 +118,20 @@ class MyModel(PastisBaseModel):
         The goal: give the model information it can use to distinguish
         "this station will be empty at 8am on Monday" from
         "this station will be half-full at 3pm on Sunday".
+
+        The boundary you are working inside
+        -----------------------------------
+        This method runs twice on two different frames, and that asymmetry is
+        the whole game:
+
+        - from fit(), on the training CSV — every column, answers included;
+        - from predict(), on a live snapshot cut down to AVAILABLE_FEATURES —
+          twelve columns, and none of the five ANSWER_COLUMNS.
+
+        So anything you read here must come from those twelve, or from a
+        statistic your model computed in fit() and carries inside itself
+        (self.station_means below is the reference example). Reading an answer
+        column gets the submission rejected, not silently rewarded.
         """
         features = make_basic_features(df, extra_df=extra_df)
 
@@ -152,6 +168,13 @@ class MyModel(PastisBaseModel):
         # features["capacity_bin"] = pd.cut(
         #     df["capacity"], bins=[0, 15, 25, 999], labels=[0, 1, 2]
         # ).astype(int)
+        #
+        # What NOT to add, whatever it does to your local score:
+        # numbikesavailable, numdocksavailable, mechanical, ebike, has_bike.
+        # They are the target in five spellings, they are absent from the
+        # snapshot at scoring, and the platform probes for them at submission.
+        # run `python my_model.py` — the preflight at the end catches this
+        # before the upload page does.
 
         # --- TODO (advanced): auxiliary data — contract v2 ---
         # No auxiliary source is declared for this scenario today, so
@@ -494,6 +517,9 @@ def main():
         print(f"  Sample  : {result['sample_output']}")
         for w in result["warnings"]:
             print(f"  ⚠  {w}")
+        if result["valid"]:
+            with open(OUTPUT_PKL, "rb") as f:
+                preflight_check(cloudpickle.load(f), pkl_path=OUTPUT_PKL)
         return
 
     # --- [1/5] Load data ---
@@ -544,11 +570,20 @@ def main():
     # --- Serve-shape check ---
     # The score above cannot detect a train/serve mismatch: y_pred was
     # computed on df_test, which came out of the same loader, with the same
-    # dtypes, as the training data. The sandbox builds its own frame from the
-    # raw columns — so a model that secretly depends on your loader scores
-    # perfectly here and collapses there. Re-score the exact same rows in
-    # serve shape; the two numbers must be identical.
-    y_pred_serve = model.predict(as_serve_frame(df_test))
+    # columns and dtypes, as the training data. The sandbox serves something
+    # narrower — the twelve AVAILABLE_FEATURES, with its own dtypes — so a
+    # model that depends on your loader scores perfectly here and collapses
+    # there. Re-score the exact same rows in serve shape; the two numbers must
+    # be identical.
+    try:
+        y_pred_serve = model.predict(as_serve_frame(df_test))
+    except KeyError as missing:
+        print(f"  ⚠  SERVE-SHAPE FAILURE: predict() needs {missing}, which the")
+        print("     sandbox does not serve. Available at scoring:")
+        print(f"     {', '.join(AVAILABLE_FEATURES)}")
+        print(f"     Never served: {', '.join(ANSWER_COLUMNS)} — they are the target.")
+        sys.exit(1)
+
     bs_serve = float(np.mean((y_pred_serve - y_test) ** 2))
     if np.isclose(bs_serve, bs_model, atol=1e-9):
         print(f"  ✓  Serve-shape check passed (BS unchanged: {bs_serve:.4f})")
@@ -576,10 +611,22 @@ def main():
     for w in result["warnings"]:
         print(f"  ⚠  {w}")
 
-    if result["valid"]:
+    if not result["valid"]:
+        print("\nFix the issues above before submitting.")
+        sys.exit(1)
+
+    # --- Preflight ---
+    # verify_submission() answers "is this a well-formed model?". The preflight
+    # answers "would the platform accept it?" — determinism, no target leakage,
+    # inside the 60s budget. Same checks the submission page runs, one minute
+    # earlier. pkl_path adds the file's sha256: re-uploading a byte-identical
+    # file is refused (409), so the fingerprint tells you which file this is.
+    preflight = preflight_check(model, df, pkl_path=OUTPUT_PKL)
+
+    if preflight["passed"]:
         print("\nReady to upload submission.pkl to https://pastis.ai")
     else:
-        print("\nFix the issues above before submitting.")
+        print("\nThis submission would be rejected. Fix the failures above.")
         sys.exit(1)
 
     # --- LEVEL 3: Hyperparameter tuning (uncomment to run) ---
